@@ -29,7 +29,54 @@ namespace lzham
       lzham_compress_params m_params;
 
       lzham_compress_status_t m_status;
+
+      lzham::vector<uint8> m_rsync_window;
+      size_t m_rsync_window_hash;
+      size_t m_rsync_window_bytes;
    };
+
+   // Rolls number of bytes computing the hash of the sliding window buffer
+   // If a sync point has been hit (window hash = 0), then clear the window
+   // and return the number bytes processed in the buffer. If no sync points
+   // have been reached, return 0.
+   static size_t rsync_roll(lzham_compress_state *state, const uint8 *buffer, size_t size)
+   {
+	   size_t remaining = 0;
+
+	   // fill the window if not filled
+	   size_t window_size = state->m_rsync_window.size();
+	   if(state->m_rsync_window_bytes < window_size)
+	   {
+		   remaining = window_size - state->m_rsync_window_bytes;
+		   for(size_t i = 0; i < remaining; ++i)
+		   {
+			   if(i >= size) return 0;
+			   char c = buffer[i];
+			   state->m_rsync_window[state->m_rsync_window_bytes++] = c;
+			   state->m_rsync_window_hash += c;
+		   }
+	   }
+
+	   // once the window is filled, old bytes are removed from the window
+	   // this is a rolling hash, so the hash value is the hash of the
+	   // last window_size bytes
+	   for(size_t i = remaining; i < size; ++i)
+	   {
+		   int pos = state->m_rsync_window_bytes % window_size;
+		   state->m_rsync_window_hash -= state->m_rsync_window[pos];
+		   char c = buffer[i];
+		   state->m_rsync_window[pos] = c;
+		   state->m_rsync_window_hash += c;
+		   state->m_rsync_window_bytes++;
+
+		   if( (state->m_rsync_window_hash % window_size) == 0 ) {
+			   state->m_rsync_window_bytes = 0;
+			   return i;
+		   }
+	   }
+
+	   return 0;
+   }
 
    static lzham_compress_status_t create_internal_init_params(lzcompressor::init_params &internal_params, const lzham_compress_params *pParams)
    {
@@ -110,6 +157,13 @@ namespace lzham
       pState->m_status = LZHAM_COMP_STATUS_NOT_FINISHED;
       pState->m_comp_data_ofs = 0;
       pState->m_finished_compression = false;
+      pState->m_rsync_window_bytes = 0;
+      pState->m_rsync_window_hash = 0;
+
+	   if(pParams->m_compress_flags & LZHAM_COMP_FLAG_RSYNCABLE)
+	   {
+		   pState->m_rsync_window.try_resize(pParams->m_rsyncable_window_size);
+	   }
 
       if (internal_params.m_max_helper_threads)
       {
@@ -152,6 +206,8 @@ namespace lzham
          pState->m_status = LZHAM_COMP_STATUS_NOT_FINISHED;
          pState->m_comp_data_ofs = 0;
          pState->m_finished_compression = false;
+         pState->m_rsync_window_bytes = 0;
+         pState->m_rsync_window_hash = 0;
       }
 
       return pState;
@@ -243,9 +299,23 @@ namespace lzham
       const size_t cMaxBytesToPutPerIteration = 4*1024*1024;
       size_t bytes_to_put = LZHAM_MIN(cMaxBytesToPutPerIteration, *pIn_buf_size);
       const bool consumed_entire_input_buf = (bytes_to_put == *pIn_buf_size);
+      bool flush = false;
 
       if (bytes_to_put)
       {
+		  // rsyncable support is enabled if pState->m_rsync_window is allocated
+		  // a window with a rolling hash is computed over the input bytes
+		  // if the rolling hashes to a certain value (i.e. 0), then we force
+		  // a full_sync flush marker
+		  if ( !pState->m_rsync_window.empty() )
+		  {
+			  size_t result = rsync_roll(pState, pIn_buf, bytes_to_put);
+			  if(result) {
+				  bytes_to_put = result;
+				  flush = true;
+			  }
+		  }
+
          if (!pState->m_compressor.put_bytes(pIn_buf, (uint)bytes_to_put))
          {
             *pIn_buf_size = 0;
@@ -255,11 +325,11 @@ namespace lzham
          }
       }
 
-      if ((consumed_entire_input_buf) && (flush_type != LZHAM_NO_FLUSH))
+      if (flush || ((consumed_entire_input_buf) && (flush_type != LZHAM_NO_FLUSH)))
       {
-         if ((flush_type == LZHAM_SYNC_FLUSH) || (flush_type == LZHAM_FULL_FLUSH) || (flush_type == LZHAM_TABLE_FLUSH))
+         if (flush || (flush_type == LZHAM_SYNC_FLUSH) || (flush_type == LZHAM_FULL_FLUSH) || (flush_type == LZHAM_TABLE_FLUSH))
          {
-            if (!pState->m_compressor.flush(flush_type))
+            if (!pState->m_compressor.flush(flush ? LZHAM_FULL_FLUSH : flush_type))
             {
                *pIn_buf_size = 0;
                *pOut_buf_size = num_bytes_written_to_out_buf;

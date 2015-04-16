@@ -130,6 +130,9 @@ extern "C" {
       LZHAM_COMP_FLAG_TRADEOFF_DECOMPRESSION_RATE_FOR_COMP_RATIO = 16,
       
       LZHAM_COMP_FLAG_WRITE_ZLIB_STREAM = 32,
+
+      // makes the compressed stream rsyncable by using sync intervals based on a rolling sum
+      LZHAM_COMP_FLAG_RSYNCABLE = 1024,
    } lzham_compress_flags;
 		
 	typedef enum 
@@ -165,6 +168,12 @@ extern "C" {
 		// def=0, 32 or higher (LZHAM_DEFAULT_TABLE_UPDATE_RATE=64), scaled by 32, controls the slowing of the update update freq, higher=more rapid slowing (faster decode/lower ratio). Was 40 in prev. releases.
 		lzham_uint32 m_table_update_interval_slow_rate;
 
+	   // window size for rsyncable mode, only used if m_compress_flags has LZHAM_COMP_FLAG_RSYNCABLE
+	   // the window size will affect compression ratio and transfer efficiency
+	   // lower = slower compression speed, lower ratio, better transfer efficiency
+	   // higher = faster compression speed, higher ratio, lower transfer efficiency
+	   // a good default value is 16384
+	   lzham_uint32 m_rsyncable_window_size;
    } lzham_compress_params;
    
    // Initializes a compressor. Returns a pointer to the compressor's internal state, or NULL on failure.

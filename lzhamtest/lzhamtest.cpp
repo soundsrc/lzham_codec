@@ -132,7 +132,9 @@ struct comp_options
       m_deterministic_parsing(false),
       m_tradeoff_decomp_rate_for_comp_ratio(false),
       m_test_compressor_reinit(false),
-		m_table_update_rate(LZHAM_DEFAULT_TABLE_UPDATE_RATE)
+		m_table_update_rate(LZHAM_DEFAULT_TABLE_UPDATE_RATE),
+      m_rsyncable(false),
+      m_rsyncable_window_size(16384)
    {
    }
 
@@ -150,6 +152,8 @@ struct comp_options
       printf("Trade off decompression rate for compression ratio: %u\n", m_tradeoff_decomp_rate_for_comp_ratio);
       printf("Test compressor reinit: %u\n", m_test_compressor_reinit);
 		printf("Table update speed: %u\n", m_table_update_rate);
+	   printf("Rsyncable: %u\n", m_rsyncable);
+	   printf("Rsyncable window size: %u\n", m_rsyncable_window_size);
    }
 
    lzham_compress_level m_comp_level;
@@ -164,6 +168,8 @@ struct comp_options
    bool m_tradeoff_decomp_rate_for_comp_ratio;
    bool m_test_compressor_reinit;
 	uint m_table_update_rate;
+	bool m_rsyncable;
+	uint m_rsyncable_window_size;
 };
 
 static void print_usage()
@@ -197,6 +203,8 @@ static void print_usage()
    printf("-afilename Enable delta compression using the specified seed file.\n");
    printf("           The same seed file MUST be used for compression/decompression.\n");
    printf("-r - Use randomized parameters for each file.\n");
+	printf("-z[WINSIZE] - Make compression rsync-friendly by syncing every interval based on the input.\n");
+	printf("              The optional WINSIZE argument specifies the window size in kilobytes.\n");
 	printf("-h[0-%u] - Set Huffman table update frequency. 0=Internal def, Def=%u, higher=faster.\n", LZHAM_FASTEST_TABLE_UPDATE_RATE, LZHAM_DEFAULT_TABLE_UPDATE_RATE);
 	printf(" Lower settings=slower decompression, but higher ratio. Note 1=impractically slow.\n");
 }
@@ -422,7 +430,11 @@ static bool compress_file(ilzham &lzham_dll, const char* pSrc_filename, const ch
       params.m_compress_flags |= LZHAM_COMP_FLAG_DETERMINISTIC_PARSING;
    if (options.m_tradeoff_decomp_rate_for_comp_ratio)
       params.m_compress_flags |= LZHAM_COMP_FLAG_TRADEOFF_DECOMPRESSION_RATE_FOR_COMP_RATIO;
-  
+	if (options.m_rsyncable) {
+		params.m_compress_flags |= LZHAM_COMP_FLAG_RSYNCABLE;
+		params.m_rsyncable_window_size = options.m_rsyncable_window_size;
+	}
+
    params.m_table_update_rate = options.m_table_update_rate;
       
    if (pSeed_filename)
@@ -1497,6 +1509,16 @@ int main_internal(string_array cmd_line, int num_helper_threads, ilzham &lzham_d
                printf("Seed filename: %s\n", seed_filename.c_str());
                break;
             }
+			case 'z':
+			 {
+				 options.m_rsyncable = true;
+				 if(str.size() > 2)
+				 {
+					 int window_size = atoi(str.c_str() + 2);
+					 options.m_rsyncable_window_size = window_size * 1024;
+				 }
+				 break;
+			 }
             default:
             {
                print_error("Invalid option: %s\n", str.c_str());
